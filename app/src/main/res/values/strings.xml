@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">Padometer</string>
+    <string name="start">Start</string>
+    <string name="stop">Stop</string>
+    <string name="sending">Sending…</string>
+    <string name="send_dialog">Send file…</string>
+    <string name="plus_x">+%d</string>
+    <string name="minus_x">-%d</string>
+    <string name="send_x">Send</string>
+    <string name="cancel">Cancel</string>
+    <string name="android_steps">Android: %d</string>
+    <string name="mine_steps">Mine: %d</string>
+    <string name="live">Live Step Counting</string>
+    <string name="offline">Non-Live Step Counting</string>
+    <string name="send">Send this data via email?</string>
+</resources>

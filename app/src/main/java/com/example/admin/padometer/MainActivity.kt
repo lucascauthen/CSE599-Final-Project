@@ -24,9 +24,8 @@ import java.util.*
 import java.lang.Math.abs
 import kotlin.collections.ArrayList
 import com.jjoe64.graphview.series.LineGraphSeries
-
-
-
+import kotlinx.android.synthetic.main.activity_main.*
+import java.lang.Math.random
 
 const val NUMBER_OF_STEPS = "number_of_steps"
 const val WINDOWING_PRIORITY = 0
@@ -54,23 +53,20 @@ class MainActivity : AppCompatActivity() {
     private var counter = 0
 
     val duration = 0.00175 * 1 // seconds
-    val waitTime = 0.00417 * 2
+    val waitTime = 0.0408
     val chripGap: Double = 0.5
     val numSamples = (SAMPLE_RATE * duration).toInt()
 
     val frequencyToneStart = 18000
     val frequencyToneEnd = 20000
-    val generatedSnd = ShortArray(numSamples)
     val waitSamplesShort: Int = (SAMPLE_RATE * waitTime).toInt()
     val waitSamplesLong: Int = (SAMPLE_RATE * chripGap).toInt()
-    val generatedSilenceShort = ShortArray(waitSamplesShort)
-    val generatedSilenceLong = ShortArray(waitSamplesLong)
-    val samples = ShortArray(numSamples)
 
 
     private val series: LineGraphSeries<DataPoint> = LineGraphSeries()
 
     val emailTask: (String) -> Unit = { name: String ->
+        /*
         if (WRITE_TO_FILE) {
             val fOutChirp = FileOutputStream(chirpFile)
             val myOutWriterChirp = OutputStreamWriter(fOutChirp)
@@ -82,6 +78,7 @@ class MainActivity : AppCompatActivity() {
             fOutChirp.flush()
             fOutChirp.close()
         }
+        */
         for (i in 0 until files.size) {
             val newFile = File(filesDir, "$name$i.txt")
             files[i].renameTo(newFile)
@@ -138,27 +135,92 @@ class MainActivity : AppCompatActivity() {
         audioTrack.release()
     }
 
+    var playingThreadOfdm = Runnable {
+        val buffsize = (AudioTrack.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT))
+        val audioTrack = AudioTrack(3, SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, buffsize, 1)
+        audioTrack.play()
+        val fOutChirp = FileOutputStream(chirpFile)
+        val myOutWriterChirp = OutputStreamWriter(fOutChirp)
+        val wait = ShortArray(waitSamplesShort)
+        while (status == Status.RECORDING) {
+            repeat(5) {
+                val samples = generateOFDM()
+                if (samples.size > buffsize) {
+                    var index = 0
+                    while (index < samples.size) {
+                        audioTrack.write(samples.sliceArray(index until Math.min(samples.size, index + buffsize)), 0, buffsize)
+                        index += buffsize
+                    }
+                } else {
+                    audioTrack.write(samples, 0, samples.size)
+                }
+                audioTrack.write(wait, 0, waitSamplesShort)
+                if (WRITE_TO_FILE) {
+                    samples.forEach {
+                        myOutWriterChirp.append((it.toDouble() / Short.MAX_VALUE).toString())
+                        myOutWriterChirp.append("\n")
+                    }
+                    wait.forEach {
+                        myOutWriterChirp.append(it.toString())
+                        myOutWriterChirp.append("\n")
+                    }
+                }
+            }
+            //audioTrack.write(ShortArray(waitSamplesLong), 0, waitSamplesLong)
+        }
+        myOutWriterChirp.close()
+        fOutChirp.flush()
+        fOutChirp.close()
+        audioTrack.stop()
+        audioTrack.release()
+    }
+
     val dataQueue: PriorityQueue<ProcessingEntry> = PriorityQueue(compareBy(ProcessingEntry::priority))
+
+    fun generateOFDM(): ShortArray {
+        val ofdmReal = DoubleArray(64 * 2)
+        val ofdmImg = DoubleArray(64 * 2)
+        for (i in 0 until 128) {
+            if ((i in 48..54) || (i in 73..79)) {
+                ofdmReal[i] = if (Random().nextBoolean()) 1.0 else -1.0
+            } else {
+                ofdmReal[i] = 0.0
+            }
+        }
+        val results = ifftnative(arrayOf(ofdmReal, ofdmImg))
+        //Create 16 bit ofdm signal with 20 sample cyclic suffix
+        return ShortArray(64 + 20) {
+            (Short.MAX_VALUE * results[it % 64]).toShort()
+        }
+    }
 
 
     fun testFourier() {
         val samples = DoubleArray(SAMPLE_RATE)
-        for(i in 0 until samples.size) {
+        for (i in 0 until samples.size) {
             samples[i] = (Math.sin(2.0 * Math.PI * i / (SAMPLE_RATE / 1000.0)))
         }
         val results = fftnative(samples, samples.size)
 
-        val a = results.maxIndex()!!
+        val a = results.maxIndex()
 
         Timber.d("Max frequency: $a")
     }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         chirpFile = File(filesDir, "chirp.txt")
+        //testFourier()
 
-        testFourier()
+        graph.viewport.isScalable = true
+        graph.viewport.setScalableY(true)
+        graph.viewport.setMinX(0.0)
+        graph.viewport.isXAxisBoundsManual = true
+        graph.viewport.setMinX(0.0)
+        graph.viewport.setMaxX(24000.0)
+        graph.addSeries(series)
 
         sendDataButton.background.mutate().alpha = (255 * 0.25).toInt()
         statusButton.setOnClickListener {
@@ -170,8 +232,10 @@ class MainActivity : AppCompatActivity() {
                 }
                 Status.RECORDING -> {
                     statusButton.text = getString(R.string.start)
-                    sendDataButton.isEnabled = true
-                    sendDataButton.background.mutate().alpha = 255
+                    if (WRITE_TO_FILE) {
+                        sendDataButton.isEnabled = true
+                        sendDataButton.background.mutate().alpha = 255
+                    }
                     status = Status.WAITING
                     counter++
                 }
@@ -199,11 +263,11 @@ class MainActivity : AppCompatActivity() {
                 bufferSize = SAMPLE_RATE * 2
             }
 
-            val audioBuffer = FloatArray(bufferSize / 2)
+            val audioBuffer = FloatArray(bufferSize)
 
             val record = AudioRecord(MediaRecorder.AudioSource.DEFAULT,
                     SAMPLE_RATE,
-                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.CHANNEL_IN_DEFAULT,
                     AudioFormat.ENCODING_PCM_FLOAT,
                     bufferSize)
 
@@ -231,12 +295,10 @@ class MainActivity : AppCompatActivity() {
                         processingBuffer[processingBufferIndex++] = it
                     } else {
                         dataQueue.add(ProcessingEntry(processingBuffer.copyOf(), RECORDING_PRIORITY))
+                        Timber.d("Add!")
                         processingBufferIndex = 0
                     }
-                }
-                //Write to file
-                if (WRITE_TO_FILE) {
-                    audioBuffer.forEach {
+                    if (WRITE_TO_FILE) {
                         myOutWriter.append(it.toString())
                         myOutWriter.append("\n")
                     }
@@ -251,7 +313,7 @@ class MainActivity : AppCompatActivity() {
 
             Timber.d(String.format("Recording stopped. Samples read: %d", shortsRead))
         }).start()
-        Thread(dataProcessingRunnable).start()
+        //Thread(dataProcessingRunnable).start()
     }
 
     external fun fftnative(data: DoubleArray, N: Int): DoubleArray
@@ -270,31 +332,39 @@ class MainActivity : AppCompatActivity() {
                         if (item.priority < RECORDING_PRIORITY) { //Items that are from this thread
                             processData(item.fftData)
                         } else if (item.priority == RECORDING_PRIORITY) { //Items that are from the recording thread, in groups of size PROCESSING_PERIOD
-                            //This section should split up the recording data into several chunks that are windowed
-                            val data = if (hasOverlap) {
-                                previousPeriodOverlap + item.data
-                            } else {
-                                item.data
-                            }
-                            var windowIndex = 0
-                            val windowSize: Int = (SAMPLE_RATE * WINDOW_SIZE).toInt()
-                            val step: Int = (SAMPLE_RATE * PROCESSING_STEP_SIZE).toInt()
-                            val range: Int = data.size
-                            var priority = WINDOWING_PRIORITY
-                            while ((windowIndex + windowSize) < range) {
-                                val window = DoubleArray(windowSize)
-                                var j = 0
-                                for (i in windowIndex until (windowIndex + windowSize)) {
-                                    window[j++] = data[i].toDouble()
+                            if (item.data.size == SAMPLE_RATE) { //No windowing
+                                val fftData: DoubleArray = DoubleArray(item.data.size)
+                                for (i in 0 until item.data.size) {
+                                    fftData[i] = item.data[i].toDouble()
                                 }
-                                dataQueue.add(ProcessingEntry(priority = priority++, name = "$windowIndex-${windowIndex + windowSize}", fftData = window))
-                                windowIndex += step
+                                dataQueue.add(ProcessingEntry(priority = WINDOWING_PRIORITY, name = "${item.data.size}", fftData = fftData))
+                            } else {
+                                //This section should split up the recording data into several chunks that are windowed
+                                val data = if (hasOverlap) {
+                                    previousPeriodOverlap + item.data
+                                } else {
+                                    item.data
+                                }
+                                var windowIndex = 0
+                                val windowSize: Int = (SAMPLE_RATE * WINDOW_SIZE).toInt()
+                                val step: Int = (SAMPLE_RATE * PROCESSING_STEP_SIZE).toInt()
+                                val range: Int = data.size
+                                var priority = WINDOWING_PRIORITY
+                                while ((windowIndex + windowSize) < range) {
+                                    val window = DoubleArray(windowSize)
+                                    var j = 0
+                                    for (i in windowIndex until (windowIndex + windowSize)) {
+                                        window[j++] = data[i].toDouble()
+                                    }
+                                    dataQueue.add(ProcessingEntry(priority = priority++, name = "$windowIndex-${windowIndex + windowSize}", fftData = window))
+                                    windowIndex += step
+                                }
+                                var j = 0
+                                for (i in (range - windowSize + step) until range) {
+                                    previousPeriodOverlap[j++] = data[i]
+                                }
+                                hasOverlap = true
                             }
-                            var j = 0
-                            for (i in (range - windowSize + step) until range) {
-                                previousPeriodOverlap[j++] = data[i]
-                            }
-                            hasOverlap = true
                         }
                     }
                 }
@@ -304,8 +374,11 @@ class MainActivity : AppCompatActivity() {
 
     fun processData(data: DoubleArray) {
         val results = fftnative(data, data.size)
-        val a = results.maxIndex()
-        Timber.d("Max: $a")
+        val dataPoints = Array<DataPoint?>(results.size / 2) { null }
+        for (i in 0 until results.size / 2) {
+            dataPoints[i] = DataPoint(i.toDouble(), results[i])
+        }
+        series.resetData(dataPoints)
     }
 }
 
